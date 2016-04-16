@@ -18,8 +18,6 @@ RUN { \
 		echo 'opcache.enable_cli=1'; \
 	} > /usr/local/etc/php/conf.d/opcache-recommended.ini
 
-VOLUME /var/www/html
-
 ENV WORDPRESS_VERSION 4.5
 ENV WORDPRESS_SHA1 439f09e7a948f02f00e952211a22b8bb0502e2e2
 
