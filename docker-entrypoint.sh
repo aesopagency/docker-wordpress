@@ -2,23 +2,7 @@
 set -e
 
 if [[ "$1" == apache2* ]] || [ "$1" == php-fpm ]; then
-	if [ -n "$MYSQL_PORT_3306_TCP" ]; then
-		if [ -z "$WORDPRESS_DB_HOST" ]; then
-			WORDPRESS_DB_HOST='mysql'
-		else
-			echo >&2 'warning: both WORDPRESS_DB_HOST and MYSQL_PORT_3306_TCP found'
-			echo >&2 "  Connecting to WORDPRESS_DB_HOST ($WORDPRESS_DB_HOST)"
-			echo >&2 '  instead of the linked mysql container'
-		fi
-	fi
-
-	if [ -z "$WORDPRESS_DB_HOST" ]; then
-		echo >&2 'error: missing WORDPRESS_DB_HOST and MYSQL_PORT_3306_TCP environment variables'
-		echo >&2 '  Did you forget to --link some_mysql_container:mysql or set an external db'
-		echo >&2 '  with -e WORDPRESS_DB_HOST=hostname:port?'
-		exit 1
-	fi
-
+	: "${WORDPRESS_DB_HOST:=mysql}"
 	# if we're linked to MySQL and thus have credentials already, let's use them
 	: ${WORDPRESS_DB_USER:=${MYSQL_ENV_MYSQL_USER:-root}}
 	if [ "$WORDPRESS_DB_USER" = 'root' ]; then
@@ -66,7 +50,7 @@ if [[ "$1" == apache2* ]] || [ "$1" == php-fpm ]; then
 	# version 4.4.1 decided to switch to windows line endings, that breaks our seds and awks
 	# https://github.com/docker-library/wordpress/issues/116
 	# https://github.com/WordPress/WordPress/commit/1acedc542fba2482bab88ec70d4bea4b997a92e4
-	sed -ri 's/\r\n|\r/\n/g' wp-config*
+	sed -ri -e 's/\r\n|\r/\n/g' wp-config*
 
 	if [ ! -e wp-config.php ]; then
 		awk '/^\/\*.*stop editing.*\*\/$/ && c == 0 { c = 1; system("cat") } { print }' wp-config-sample.php > wp-config.php <<'EOPHP'
@@ -82,13 +66,13 @@ EOPHP
 
 	# see http://stackoverflow.com/a/2705678/433558
 	sed_escape_lhs() {
-		echo "$@" | sed 's/[]\/$*.^|[]/\\&/g'
+		echo "$@" | sed -e 's/[]\/$*.^|[]/\\&/g'
 	}
 	sed_escape_rhs() {
-		echo "$@" | sed 's/[\/&]/\\&/g'
+		echo "$@" | sed -e 's/[\/&]/\\&/g'
 	}
 	php_escape() {
-		php -r 'var_export(('$2') $argv[1]);' "$1"
+		php -r 'var_export(('$2') $argv[1]);' -- "$1"
 	}
 	set_config() {
 		key="$1"
@@ -100,7 +84,7 @@ EOPHP
 			start="^(\s*)$(sed_escape_lhs "$key")\s*="
 			end=";"
 		fi
-		sed -ri "s/($start\s*).*($end)$/\1$(sed_escape_rhs "$(php_escape "$value" "$var_type")")\3/" wp-config.php
+		sed -ri -e "s/($start\s*).*($end)$/\1$(sed_escape_rhs "$(php_escape "$value" "$var_type")")\3/" wp-config.php
 	}
 
 	set_config 'DB_HOST' "$WORDPRESS_DB_HOST"
@@ -126,7 +110,7 @@ EOPHP
 			set_config "$unique" "$unique_value"
 		else
 			# if not specified, let's generate a random value
-			current_set="$(sed -rn "s/define\((([\'\"])$unique\2\s*,\s*)(['\"])(.*)\3\);/\4/p" wp-config.php)"
+			current_set="$(sed -rn -e "s/define\((([\'\"])$unique\2\s*,\s*)(['\"])(.*)\3\);/\4/p" wp-config.php)"
 			if [ "$current_set" = 'put your unique phrase here' ]; then
 				set_config "$unique" "$(head -c1M /dev/urandom | sha1sum | cut -d' ' -f1)"
 			fi
@@ -147,11 +131,20 @@ EOPHP
 
 $stderr = fopen('php://stderr', 'w');
 
-list($host, $port) = explode(':', $argv[1], 2);
+// https://codex.wordpress.org/Editing_wp-config.php#MySQL_Alternate_Port
+//   "hostname:port"
+// https://codex.wordpress.org/Editing_wp-config.php#MySQL_Sockets_or_Pipes
+//   "hostname:unix-socket-path"
+list($host, $socket) = explode(':', $argv[1], 2);
+$port = 0;
+if (is_numeric($socket)) {
+	$port = (int) $socket;
+	$socket = null;
+}
 
 $maxTries = 10;
 do {
-	$mysql = new mysqli($host, $argv[2], $argv[3], '', (int)$port);
+	$mysql = new mysqli($host, $argv[2], $argv[3], '', $port, $socket);
 	if ($mysql->connect_error) {
 		fwrite($stderr, "\n" . 'MySQL Connection Error: (' . $mysql->connect_errno . ') ' . $mysql->connect_error . "\n");
 		--$maxTries;
